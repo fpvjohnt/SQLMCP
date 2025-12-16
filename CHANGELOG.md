@@ -1,5 +1,49 @@
 # Changelog
 
+## Version 2.2.0 - 2025-12-11
+
+### Added: Direct CSV Download to Mac
+
+**Feature:** New `query_to_csv` tool that returns CSV data through Claude Desktop for direct download to your Mac.
+
+**Problem Solved:** User wanted to download CSV files directly to Mac, not export to Windows VM.
+
+#### New Tool: query_to_csv
+
+**Purpose:** Generate CSV content that Claude Desktop can offer as a downloadable file directly to your Mac.
+
+**Parameters:**
+- `sql` - SELECT query to execute
+- `max_rows` - Row limit (default: 10,000 to prevent browser issues)
+
+**How It Works:**
+1. Query executes on Windows VM
+2. CSV generated in memory
+3. Returned to Claude Desktop
+4. Presented as downloadable file
+5. Downloads directly to your Mac
+
+**Usage:**
+```
+"Download APTech 2025 incidents as CSV"
+"Download first 5000 users as CSV"
+"Download incident data with 20000 row limit as CSV"
+```
+
+**Best For:**
+- Datasets up to ~50K rows
+- Direct download to Mac needed
+- Ad-hoc analysis
+- Immediate access required
+
+**Comparison with export_to_csv:**
+- `query_to_csv`: Downloads to Mac, limited to ~50K rows, immediate
+- `export_to_csv`: Saves to Windows VM, unlimited rows, requires file transfer
+
+See [DOWNLOAD_CSV_GUIDE.md](DOWNLOAD_CSV_GUIDE.md) for complete documentation.
+
+---
+
 ## Version 2.1.0 - 2025-12-11
 
 ### Added: CSV Export Tool - Bypass Claude Desktop Limits

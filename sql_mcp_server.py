@@ -10,6 +10,7 @@ import os
 import re
 import json
 import csv
+import io
 import logging
 from typing import List, Optional
 from datetime import datetime
@@ -325,6 +326,84 @@ def export_to_csv(sql: str, file_path: str, max_rows: Optional[int] = None) -> s
         return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
     except IOError as e:
         error_msg = f"File I/O error: {str(e)}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
+    except Exception as e:
+        error_msg = f"Unexpected error: {str(e)}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
+
+
+@mcp.tool()
+def query_to_csv(sql: str, max_rows: Optional[int] = 10000) -> str:
+    """
+    Execute a SELECT query and return results as CSV text for download in Claude Desktop.
+    Claude Desktop can present this as a downloadable file directly to your Mac.
+
+    Args:
+        sql: The SQL SELECT query to execute
+        max_rows: Maximum number of rows to return (default: 10000 to prevent browser issues)
+
+    Returns:
+        JSON string containing CSV text and metadata that Claude can offer as download
+    """
+    try:
+        if not validate_sql_query(sql):
+            return json.dumps({
+                "error": "Query validation failed. Potentially unsafe SQL detected.",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2)
+
+        # Only allow SELECT queries for safety
+        if not sql.strip().upper().startswith('SELECT'):
+            return json.dumps({
+                "error": "Only SELECT queries are allowed for CSV download.",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2)
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+
+            if cursor.description is None:
+                return json.dumps({
+                    "error": "Query returned no results to convert to CSV",
+                    "timestamp": datetime.now().isoformat()
+                }, indent=2)
+
+            # Get column names
+            columns = [col[0] for col in cursor.description]
+
+            # Build CSV in memory
+            output = io.StringIO()
+            writer = csv.writer(output)
+
+            # Write header
+            writer.writerow(columns)
+
+            # Write data rows
+            rows_written = 0
+            for row in cursor.fetchmany(max_rows):
+                writer.writerow(row)
+                rows_written += 1
+
+            csv_content = output.getvalue()
+            output.close()
+
+            logger.info(f"CSV generation successful: {rows_written} rows")
+
+            return json.dumps({
+                "success": True,
+                "csv_content": csv_content,
+                "rows": rows_written,
+                "columns": len(columns),
+                "truncated": rows_written >= max_rows,
+                "timestamp": datetime.now().isoformat(),
+                "instructions": "Claude Desktop can save this as a downloadable CSV file"
+            }, indent=2)
+
+    except pyodbc.Error as e:
+        error_msg = f"Database error: {str(e)}"
         logger.error(error_msg)
         return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
     except Exception as e:
