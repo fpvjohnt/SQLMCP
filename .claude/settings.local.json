@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(copy .env.example .env)",
+      "Bash(pip install:*)",
+      "Bash(venvScriptspip.exe install python-dotenv colorlog)",
+      "Bash(./venv/Scripts/pip.exe install:*)",
+      "Bash(./venv/Scripts/pip.exe:*)",
+      "Bash(./venv/Scripts/python.exe:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
