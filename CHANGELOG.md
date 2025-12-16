@@ -1,5 +1,46 @@
 # Changelog
 
+## Version 2.1.0 - 2025-12-11
+
+### Added: CSV Export Tool - Bypass Claude Desktop Limits
+
+**Feature:** New `export_to_csv` tool that writes query results directly to disk, completely bypassing Claude Desktop's display limitations.
+
+**Problem Solved:** Large query results were getting truncated/compacted in Claude Desktop, preventing CSV export.
+
+#### New Tool: export_to_csv
+
+**Parameters:**
+- `sql` - SELECT query to execute
+- `file_path` - Where to save CSV (e.g., C:\\Users\\NRJS\\exports\\data.csv)
+- `max_rows` - Optional limit (default: unlimited)
+
+**Features:**
+- Handles unlimited rows (millions+)
+- Direct disk write (no display in Claude)
+- Auto-creates directories
+- UTF-8 encoding
+- Full logging and error handling
+- Returns file size and row count
+
+**Usage Examples:**
+```
+"Export all active users to C:\\Users\\NRJS\\exports\\users.csv"
+"Export incidents from 2024 to CSV"
+"Export 50000 records to C:\\exports\\data.csv"
+```
+
+**Benefits:**
+- No more truncation issues
+- Export datasets of any size
+- Perfect for Excel, Python, reporting tools
+- Automated and fast
+- Same security as query_sql
+
+See [CSV_EXPORT_GUIDE.md](CSV_EXPORT_GUIDE.md) for complete documentation.
+
+---
+
 ## Version 2.0.1 - 2025-12-11
 
 ### Fixed: Network Binding for Remote Connections

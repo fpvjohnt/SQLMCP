@@ -9,6 +9,7 @@ index management, and maintenance operations.
 import os
 import re
 import json
+import csv
 import logging
 from typing import List, Optional
 from datetime import datetime
@@ -231,6 +232,103 @@ def execute_dml(sql: str) -> str:
 
     except pyodbc.Error as e:
         error_msg = f"Database error: {str(e)}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
+
+
+@mcp.tool()
+def export_to_csv(sql: str, file_path: str, max_rows: Optional[int] = None) -> str:
+    """
+    Execute a SELECT query and export results directly to a CSV file on disk.
+    This bypasses Claude Desktop's display limits for large datasets.
+
+    Args:
+        sql: The SQL SELECT query to execute
+        file_path: Full path where CSV should be saved (e.g., C:\\Users\\NRJS\\exports\\data.csv)
+        max_rows: Maximum number of rows to export (default: unlimited, use None for all rows)
+
+    Returns:
+        JSON string with export status, file path, and row count
+    """
+    try:
+        if not validate_sql_query(sql):
+            return json.dumps({
+                "error": "Query validation failed. Potentially unsafe SQL detected.",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2)
+
+        # Only allow SELECT queries for safety
+        if not sql.strip().upper().startswith('SELECT'):
+            return json.dumps({
+                "error": "Only SELECT queries are allowed for CSV export.",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2)
+
+        # Validate file path
+        try:
+            export_dir = os.path.dirname(file_path)
+            if export_dir and not os.path.exists(export_dir):
+                os.makedirs(export_dir)
+        except Exception as e:
+            return json.dumps({
+                "error": f"Invalid file path: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2)
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+
+            if cursor.description is None:
+                return json.dumps({
+                    "error": "Query returned no results to export",
+                    "timestamp": datetime.now().isoformat()
+                }, indent=2)
+
+            # Get column names
+            columns = [col[0] for col in cursor.description]
+
+            # Write to CSV
+            rows_written = 0
+            with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+
+                # Write header
+                writer.writerow(columns)
+
+                # Write data rows
+                if max_rows:
+                    for row in cursor.fetchmany(max_rows):
+                        writer.writerow(row)
+                        rows_written += 1
+                else:
+                    for row in cursor:
+                        writer.writerow(row)
+                        rows_written += 1
+
+            file_size = os.path.getsize(file_path)
+            logger.info(f"CSV export successful: {rows_written} rows written to {file_path}")
+
+            return json.dumps({
+                "success": True,
+                "file_path": file_path,
+                "rows_exported": rows_written,
+                "file_size_bytes": file_size,
+                "file_size_mb": round(file_size / 1024 / 1024, 2),
+                "columns": columns,
+                "timestamp": datetime.now().isoformat()
+            }, indent=2)
+
+    except pyodbc.Error as e:
+        error_msg = f"Database error: {str(e)}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
+    except IOError as e:
+        error_msg = f"File I/O error: {str(e)}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
+    except Exception as e:
+        error_msg = f"Unexpected error: {str(e)}"
         logger.error(error_msg)
         return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
 
