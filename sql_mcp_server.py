@@ -12,7 +12,7 @@ import json
 import csv
 import io
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -72,6 +72,29 @@ class Config:
         return ";".join(parts)
 
 
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def sanitize_identifier(name: str) -> str:
+    """Ensure schema/table names are safe before using in dynamic SQL."""
+    if not name:
+        raise ValueError("Identifier cannot be empty")
+
+    if len(name) > 128:
+        raise ValueError("Identifier is too long")
+
+    if not IDENTIFIER_PATTERN.match(name):
+        raise ValueError("Identifier must contain only letters, numbers, or underscore")
+
+    return name
+
+
+def quote_identifier(name: str) -> str:
+    """Quote SQL identifiers safely for use in composed object names."""
+    safe = sanitize_identifier(name)
+    return f"[{safe.replace(']', ']]')}]"
+
+
 @contextmanager
 def get_db_connection():
     """Context manager for database connections with proper cleanup"""
@@ -92,32 +115,47 @@ def get_db_connection():
             logger.info("Database connection closed")
 
 
-def validate_sql_query(sql: str) -> bool:
+def validate_sql_query(sql: str, *, allow_dml: bool = False) -> Tuple[bool, str]:
     """
-    Basic SQL validation to prevent dangerous operations.
-    This is not foolproof but adds a layer of safety.
+    Defensive SQL validation. Returns (is_valid, reason_if_invalid).
+    This is intentionally strict to prevent multi-statement or DDL/DCL execution.
     """
+    if not sql or not sql.strip():
+        return False, "SQL is empty"
+
     sql_upper = sql.upper().strip()
 
-    # Block potentially dangerous commands
-    dangerous_patterns = [
-        r'\bDROP\s+DATABASE\b',
-        r'\bDROP\s+TABLE\b',
-        r'\bTRUNCATE\b',
-        r'\bDELETE\s+FROM\b.*WHERE\s+1\s*=\s*1',
-        r'\bUPDATE\b.*WHERE\s+1\s*=\s*1',
-        r';\s*DROP\b',  # SQL injection attempt
-        r'--',  # Comment injection
-        r'xp_cmdshell',  # Command execution
-        r'sp_executesql',  # Dynamic SQL
+    disallowed_commands = [
+        r"\bALTER\b",
+        r"\bCREATE\b",
+        r"\bDROP\b",
+        r"\bTRUNCATE\b",
+        r"\bGRANT\b",
+        r"\bREVOKE\b",
+        r"\bDENY\b",
+        r"\bEXEC\b",
+        r"\bEXECUTE\b",
+        r"\bMERGE\b",
+        r"XP_CMDSHELL",
+        r"SP_EXECUTESQL",
     ]
 
-    for pattern in dangerous_patterns:
-        if re.search(pattern, sql_upper):
-            logger.warning(f"Blocked potentially dangerous SQL pattern: {pattern}")
-            return False
+    if not allow_dml:
+        disallowed_commands.extend([r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b"])
 
-    return True
+    for pattern in disallowed_commands:
+        if re.search(pattern, sql_upper):
+            logger.warning(f"Blocked SQL due to pattern: {pattern}")
+            return False, f"Blocked disallowed command or keyword: {pattern}"
+
+    if "--" in sql_upper or "/*" in sql_upper:
+        return False, "SQL comments are not allowed"
+
+    stripped = sql.strip()
+    if ";" in stripped[:-1]:
+        return False, "Multiple statements are not allowed"
+
+    return True, ""
 
 
 def format_query_result(columns: List[str], rows: List[tuple], max_rows: int = None) -> str:
@@ -152,9 +190,10 @@ def query_sql(sql: str, max_rows: Optional[int] = None) -> str:
         JSON string with columns, rows, row_count, truncated flag, and timestamp
     """
     try:
-        if not validate_sql_query(sql):
+        is_valid, reason = validate_sql_query(sql)
+        if not is_valid:
             return json.dumps({
-                "error": "Query validation failed. Potentially unsafe SQL detected.",
+                "error": f"Query validation failed: {reason}",
                 "timestamp": datetime.now().isoformat()
             }, indent=2)
 
@@ -181,6 +220,10 @@ def query_sql(sql: str, max_rows: Optional[int] = None) -> str:
             logger.info(f"Query executed successfully. Returned {result_dict['row_count']} rows")
             return result_json
 
+    except ValueError as e:
+        error_msg = f"Invalid identifier: {e}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
     except pyodbc.Error as e:
         error_msg = f"Database error: {str(e)}"
         logger.error(error_msg)
@@ -203,9 +246,10 @@ def execute_dml(sql: str) -> str:
         JSON string with execution status and rows affected
     """
     try:
-        if not validate_sql_query(sql):
+        is_valid, reason = validate_sql_query(sql, allow_dml=True)
+        if not is_valid:
             return json.dumps({
-                "error": "Query validation failed. Potentially unsafe SQL detected.",
+                "error": f"Query validation failed: {reason}",
                 "timestamp": datetime.now().isoformat()
             }, indent=2)
 
@@ -220,9 +264,14 @@ def execute_dml(sql: str) -> str:
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(sql)
-            rows_affected = cursor.rowcount
-            conn.commit()
+
+            try:
+                cursor.execute(sql)
+                rows_affected = cursor.rowcount
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
             logger.info(f"DML executed successfully. {rows_affected} rows affected")
             return json.dumps({
@@ -252,9 +301,10 @@ def export_to_csv(sql: str, file_path: str, max_rows: Optional[int] = None) -> s
         JSON string with export status, file path, and row count
     """
     try:
-        if not validate_sql_query(sql):
+        is_valid, reason = validate_sql_query(sql)
+        if not is_valid:
             return json.dumps({
-                "error": "Query validation failed. Potentially unsafe SQL detected.",
+                "error": f"Query validation failed: {reason}",
                 "timestamp": datetime.now().isoformat()
             }, indent=2)
 
@@ -348,9 +398,10 @@ def query_to_csv(sql: str, max_rows: Optional[int] = 10000) -> str:
         JSON string containing CSV text and metadata that Claude can offer as download
     """
     try:
-        if not validate_sql_query(sql):
+        is_valid, reason = validate_sql_query(sql)
+        if not is_valid:
             return json.dumps({
-                "error": "Query validation failed. Potentially unsafe SQL detected.",
+                "error": f"Query validation failed: {reason}",
                 "timestamp": datetime.now().isoformat()
             }, indent=2)
 
@@ -428,6 +479,9 @@ def list_tables(schema: Optional[str] = None) -> str:
         JSON string with table information including schema, name, and row counts
     """
     try:
+        if schema:
+            sanitize_identifier(schema)
+
         query = """
         SELECT
             s.name AS schema_name,
@@ -449,8 +503,10 @@ def list_tables(schema: Optional[str] = None) -> str:
             AND i.index_id <= 1
         """
 
+        params: List[str] = []
         if schema:
-            query += f" AND s.name = '{schema}'"
+            query += " AND s.name = ?"
+            params.append(schema)
 
         query += """
         GROUP BY
@@ -461,7 +517,7 @@ def list_tables(schema: Optional[str] = None) -> str:
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, params)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -489,7 +545,10 @@ def describe_table(table_name: str, schema: str = "dbo") -> str:
         Dictionary with column definitions, data types, constraints, and indexes
     """
     try:
-        query = f"""
+        sanitize_identifier(table_name)
+        sanitize_identifier(schema)
+
+        query = """
         SELECT
             c.name AS column_name,
             t.name AS data_type,
@@ -518,14 +577,14 @@ def describe_table(table_name: str, schema: str = "dbo") -> str:
             FROM sys.foreign_key_columns fkc
         ) fk ON c.object_id = fk.parent_object_id AND c.column_id = fk.parent_column_id
         WHERE
-            c.object_id = OBJECT_ID('{schema}.{table_name}')
+            c.object_id = OBJECT_ID(QUOTENAME(?) + '.' + QUOTENAME(?))
         ORDER BY
             c.column_id
         """
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, (schema, table_name))
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -533,6 +592,10 @@ def describe_table(table_name: str, schema: str = "dbo") -> str:
             logger.info(f"Described table {schema}.{table_name}")
             return result_json
 
+    except ValueError as e:
+        error_msg = f"Invalid identifier: {e}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
     except pyodbc.Error as e:
         error_msg = f"Database error: {str(e)}"
         logger.error(error_msg)
@@ -553,7 +616,10 @@ def get_table_sample(table_name: str, schema: str = "dbo", limit: int = 10) -> s
         Dictionary with sample data from the table
     """
     try:
-        query = f"SELECT TOP {limit} * FROM {schema}.{table_name}"
+        safe_limit = max(1, int(limit))
+        schema_quoted = quote_identifier(schema)
+        table_quoted = quote_identifier(table_name)
+        query = f"SELECT TOP {safe_limit} * FROM {schema_quoted}.{table_quoted}"
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -561,10 +627,14 @@ def get_table_sample(table_name: str, schema: str = "dbo", limit: int = 10) -> s
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
-            result_json = format_query_result(columns, rows, max_rows=limit)
-            logger.info(f"Retrieved {limit} sample rows from {schema}.{table_name}")
+            result_json = format_query_result(columns, rows, max_rows=safe_limit)
+            logger.info(f"Retrieved {safe_limit} sample rows from {schema}.{table_name}")
             return result_json
 
+    except ValueError as e:
+        error_msg = f"Invalid identifier: {e}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
     except pyodbc.Error as e:
         error_msg = f"Database error: {str(e)}"
         logger.error(error_msg)
@@ -588,6 +658,10 @@ def list_indexes(table_name: Optional[str] = None, schema: str = "dbo") -> str:
         Dictionary with index information including type, columns, and statistics
     """
     try:
+        if table_name:
+            sanitize_identifier(table_name)
+        sanitize_identifier(schema)
+
         query = """
         SELECT
             s.name AS schema_name,
@@ -618,14 +692,16 @@ def list_indexes(table_name: Optional[str] = None, schema: str = "dbo") -> str:
             t.is_ms_shipped = 0
         """
 
+        params: List[str] = []
         if table_name:
-            query += f" AND t.name = '{table_name}' AND s.name = '{schema}'"
+            query += " AND t.name = ? AND s.name = ?"
+            params.extend([table_name, schema])
 
         query += " ORDER BY s.name, t.name, i.name"
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, params)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -633,6 +709,10 @@ def list_indexes(table_name: Optional[str] = None, schema: str = "dbo") -> str:
             logger.info(f"Listed indexes")
             return result_json
 
+    except ValueError as e:
+        error_msg = f"Invalid identifier: {e}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
     except pyodbc.Error as e:
         error_msg = f"Database error: {str(e)}"
         logger.error(error_msg)
@@ -652,6 +732,10 @@ def get_index_fragmentation(table_name: Optional[str] = None, schema: str = "dbo
         Dictionary with fragmentation statistics for indexes
     """
     try:
+        if table_name:
+            sanitize_identifier(table_name)
+        sanitize_identifier(schema)
+
         query = """
         SELECT
             OBJECT_SCHEMA_NAME(ips.object_id) AS schema_name,
@@ -674,14 +758,16 @@ def get_index_fragmentation(table_name: Optional[str] = None, schema: str = "dbo
             AND ips.page_count > 100
         """
 
+        params: List[str] = []
         if table_name:
-            query += f" AND OBJECT_NAME(ips.object_id) = '{table_name}' AND OBJECT_SCHEMA_NAME(ips.object_id) = '{schema}'"
+            query += " AND OBJECT_NAME(ips.object_id) = ? AND OBJECT_SCHEMA_NAME(ips.object_id) = ?"
+            params.extend([table_name, schema])
 
         query += " ORDER BY ips.avg_fragmentation_in_percent DESC"
 
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query)
+            cursor.execute(query, params)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -689,6 +775,10 @@ def get_index_fragmentation(table_name: Optional[str] = None, schema: str = "dbo
             logger.info(f"Analyzed index fragmentation")
             return result_json
 
+    except ValueError as e:
+        error_msg = f"Invalid identifier: {e}"
+        logger.error(error_msg)
+        return json.dumps({"error": error_msg, "timestamp": datetime.now().isoformat()}, indent=2)
     except pyodbc.Error as e:
         error_msg = f"Database error: {str(e)}"
         logger.error(error_msg)

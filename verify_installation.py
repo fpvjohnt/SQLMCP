@@ -6,6 +6,7 @@ Run this script to verify all dependencies and configuration are correct.
 
 import sys
 import os
+from packaging.version import Version, InvalidVersion
 
 def check_python_version():
     """Check Python version"""
@@ -56,7 +57,20 @@ def check_dependencies():
             else:
                 version = 'unknown'
 
-            print(f"  [OK] {name:20s} version {version}")
+            status = "[OK]"
+            message = f"{name:20s} version {version}"
+
+            if version != 'unknown':
+                try:
+                    if Version(str(version)) < Version(min_version):
+                        status = "[ERROR]"
+                        message = f"{name:20s} version {version} (minimum {min_version})"
+                        all_ok = False
+                except InvalidVersion:
+                    status = "[WARNING]"
+                    message = f"{name:20s} version {version} (unable to parse, expected >= {min_version})"
+
+            print(f"  {status} {message}")
         except ImportError:
             print(f"  [ERROR] {name} not installed")
             all_ok = False
@@ -131,7 +145,8 @@ def test_database_connection():
                 cursor.execute("SELECT @@VERSION")
                 version = cursor.fetchone()[0]
                 print(f"  [OK] Database connection successful")
-                print(f"       SQL Server: {version.split('\\n')[0][:80]}")
+                version_line = version.split("\n")[0][:80]
+                print(f"       SQL Server: {version_line}")
                 return True
         except Exception as e:
             print(f"  [ERROR] Database connection failed: {e}")
