@@ -13,3 +13,4 @@ colorlog>=6.8.0
 
 # Utilities
 python-dateutil>=2.8.2
+packaging>=24.0
